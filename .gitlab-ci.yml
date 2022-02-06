@@ -1,0 +1,48 @@
+stages:
+  - test
+  - docker-build
+  - deploy
+
+test-job:
+  stage: test
+  image: python:3.10
+  script:
+    - pip install -r requirements.txt
+    - pytest --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+
+docker-build-job:
+  stage: docker-build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - cat "$GCP_SERVICE_ACCOUNT_KEY_BASE64" | docker login -u _json_key_base64 --password-stdin "$GCP_ARTIFACTORY"
+  script:
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]]; then
+        tag=""
+        echo "Running on default branch '$CI_DEFAULT_BRANCH': tag = 'latest'"
+      else
+        tag=":$CI_COMMIT_REF_SLUG"
+        echo "Running on branch '$CI_COMMIT_BRANCH': tag = $tag"
+      fi
+    - docker build -t "$GCP_REGISTRY_IMAGE${tag}" .
+    - docker push "$GCP_REGISTRY_IMAGE${tag}"
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      exists:
+        - Dockerfile
+
+deploy-job:
+  stage: deploy
+  image: google/cloud-sdk
+  before_script:
+    - gcloud auth activate-service-account --key-file "$GCP_SERVICE_ACCOUNT_KEY"
+  script:
+    - gcloud run deploy "$GCP_SERVICE_NAME" --image "$GCP_REGISTRY_IMAGE" --region "$GCP_REGION"
+  rules:
+    - if: $CI_DEFAULT_BRANCH
